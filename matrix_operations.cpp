@@ -3,7 +3,12 @@
 #include <random>
 #include <chrono>
 #include <stdexcept>
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>  // ARM NEON intrinsics
+#elif defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>  // AVX2 intrinsics
+#endif
 
 Matrix::Matrix(size_t r, size_t c) : rows(r), cols(c) {
     data.resize(rows, std::vector<double>(cols, 0.0));
@@ -28,6 +33,34 @@ Matrix Matrix::multiply(const Matrix& other) const {
 
     Matrix result(rows, other.cols);
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // ARM64 optimized using NEON for double-precision
+    for (size_t i = 0; i < rows; i++) {
+        for (size_t j = 0; j < other.cols; j++) {
+            float64x2_t sum_vec = vdupq_n_f64(0.0);
+            size_t k = 0;
+
+            // Process 2 elements at a time with NEON (128-bit registers)
+            for (; k + 1 < cols; k += 2) {
+                float64x2_t a_vec = vld1q_f64(&data[i][k]);
+                // Gather elements from column j (non-contiguous access)
+                double b_arr[2] = { other.data[k][j], other.data[k+1][j] };
+                float64x2_t b_vec = vld1q_f64(b_arr);
+                sum_vec = vfmaq_f64(sum_vec, a_vec, b_vec);  // Fused multiply-add
+            }
+
+            // Horizontal add using NEON pairwise add
+            double sum = vpaddd_f64(sum_vec);
+
+            // Handle remaining elements
+            for (; k < cols; k++) {
+                sum += data[i][k] * other.data[k][j];
+            }
+
+            result.data[i][j] = sum;
+        }
+    }
+#elif defined(__x86_64__) || defined(_M_X64)
     // x86-64 optimized using AVX2 for double-precision
     for (size_t i = 0; i < rows; i++) {
         for (size_t j = 0; j < other.cols; j++) {
@@ -63,6 +96,18 @@ Matrix Matrix::multiply(const Matrix& other) const {
             result.data[i][j] = sum;
         }
     }
+#else
+    // Scalar fallback for other architectures
+    for (size_t i = 0; i < rows; i++) {
+        for (size_t j = 0; j < other.cols; j++) {
+            double sum = 0.0;
+            for (size_t k = 0; k < cols; k++) {
+                sum += data[i][k] * other.data[k][j];
+            }
+            result.data[i][j] = sum;
+        }
+    }
+#endif
 
     return result;
 }
