@@ -3,7 +3,7 @@
 #include <random>
 #include <chrono>
 #include <stdexcept>
-#include <immintrin.h>  // AVX2 intrinsics
+#include <arm_neon.h>  // ARM NEON intrinsics
 
 Matrix::Matrix(size_t r, size_t c) : rows(r), cols(c) {
     data.resize(rows, std::vector<double>(cols, 0.0));
@@ -28,35 +28,32 @@ Matrix Matrix::multiply(const Matrix& other) const {
 
     Matrix result(rows, other.cols);
 
-    // x86-64 optimized using AVX2 for double-precision
+    // ARM64 optimized using NEON for double-precision (2 elements at a time)
     for (size_t i = 0; i < rows; i++) {
         for (size_t j = 0; j < other.cols; j++) {
-            __m256d sum_vec = _mm256_setzero_pd();
+            float64x2_t sum_vec = vdupq_n_f64(0.0);
             size_t k = 0;
 
-            // Process 4 elements at a time with AVX2
-            for (; k + 3 < cols; k += 4) {
-                __m256d a_vec = _mm256_loadu_pd(&data[i][k]);
-                __m256d b_vec = _mm256_set_pd(
-                    other.data[k+3][j],
-                    other.data[k+2][j],
-                    other.data[k+1][j],
-                    other.data[k][j]
-                );
-                sum_vec = _mm256_add_pd(sum_vec, _mm256_mul_pd(a_vec, b_vec));
+            // Process 2 elements at a time with NEON (64-bit doubles)
+            for (; k + 1 < cols; k += 2) {
+                // Load 2 doubles from matrix a
+                float64x2_t a_vec = vld1q_f64(&data[i][k]);
+                
+                // Load corresponding elements from matrix b (column access)
+                float64_t b_vals[2] = {other.data[k][j], other.data[k+1][j]};
+                float64x2_t b_vec = vld1q_f64(b_vals);
+                
+                // Multiply and accumulate: sum_vec += a_vec * b_vec
+                sum_vec = vaddq_f64(sum_vec, vmulq_f64(a_vec, b_vec));
             }
 
-            // Horizontal add using AVX
-            __m128d sum_high = _mm256_extractf128_pd(sum_vec, 1);
-            __m128d sum_low = _mm256_castpd256_pd128(sum_vec);
-            __m128d sum_128 = _mm_add_pd(sum_low, sum_high);
-
+            // Extract results from the vector and sum them
             double sum_arr[2];
-            _mm_storeu_pd(sum_arr, sum_128);
+            vst1q_f64(sum_arr, sum_vec);
             double sum = sum_arr[0] + sum_arr[1];
 
-            // Handle remaining elements
-            for (; k < cols; k++) {
+            // Handle remaining element (if cols is odd)
+            if (k < cols) {
                 sum += data[i][k] * other.data[k][j];
             }
 
